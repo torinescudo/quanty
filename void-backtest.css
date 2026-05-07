@@ -1,0 +1,163 @@
+/* ===================================================
+   Backtest view styles
+   =================================================== */
+
+/* hide native number spinners inside backtest view */
+.bt-config input[type="number"]::-webkit-outer-spin-button,
+.bt-config input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none !important;
+  appearance: none !important;
+  margin: 0;
+}
+.bt-config input[type="number"],
+input[type="number"] {
+  -moz-appearance: textfield !important;
+  appearance: textfield !important;
+}
+
+.bt-grid {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 18px;
+  align-items: start;
+}
+@media (max-width: 1280px) { .bt-grid { grid-template-columns: 1fr; } }
+
+.bt-config { display: flex; flex-direction: column; gap: 16px; }
+.bt-row2 { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 10px; }
+
+.bt-params {
+  border: 1px dashed var(--panel-border);
+  border-radius: 2px;
+  padding: 12px;
+  background: rgba(94,234,212,0.02);
+}
+.bt-params-head {
+  display: flex; align-items: center; gap: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; letter-spacing: 0.18em; color: var(--text-tertiary);
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+.bt-params-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+
+.bt-actions { display: flex; gap: 10px; margin-top: 4px; }
+
+.bt-progress {
+  height: 2px; width: 100%;
+  background: rgba(94,234,212,0.08);
+  border-radius: 1px; overflow: hidden;
+  margin-top: 4px;
+}
+.bt-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--plasma));
+  box-shadow: 0 0 6px var(--accent);
+  transition: width 0.12s linear;
+}
+
+.bt-empty {
+  padding: 36px 16px;
+  text-align: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; letter-spacing: 0.22em;
+  color: var(--text-dim);
+}
+
+/* stats grid */
+.bt-stats {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px;
+  background: var(--panel-border);
+  border: 1px solid var(--panel-border);
+}
+.bt-stat {
+  background: var(--bg-panel-solid);
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.bt-stat-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px; letter-spacing: 0.18em; color: var(--text-tertiary);
+  text-transform: uppercase;
+}
+.bt-stat-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px; font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+/* histogram */
+.bt-hist {
+  position: relative;
+  height: 200px;
+  display: grid; grid-template-columns: repeat(14, 1fr);
+  gap: 2px;
+  padding: 14px 8px 28px;
+  border-top: 1px dashed var(--panel-border);
+  border-bottom: 1px dashed var(--panel-border);
+}
+.bt-hist-col {
+  position: relative;
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.bt-hist-bar {
+  width: 100%;
+  min-height: 1px;
+  border-radius: 1px 1px 0 0;
+  opacity: 0.85;
+  transition: opacity 0.15s;
+}
+.bt-hist-col:hover .bt-hist-bar { opacity: 1; box-shadow: 0 0 6px currentColor; }
+.bt-hist-axis {
+  position: absolute; left: 8px; right: 8px; bottom: 6px;
+  display: flex; justify-content: space-between;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px; letter-spacing: 0.14em; color: var(--text-tertiary);
+}
+
+.pos { color: var(--accent); }
+.neg { color: var(--neg); }
+
+/* equity chart hover */
+.bt-chart-wrap {
+  position: relative;
+  width: 100%; height: 100%;
+  cursor: crosshair;
+}
+.bt-tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(2,3,10,0.92);
+  border: 1px solid var(--panel-border-strong);
+  border-left: 2px solid var(--accent);
+  padding: 10px 12px;
+  min-width: 200px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--text-primary);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.6), 0 0 16px rgba(94,234,212,0.18);
+  z-index: 5;
+}
+.bt-tooltip-row {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 14px; padding: 2px 0;
+}
+.bt-tooltip-k {
+  font-size: 9px; letter-spacing: 0.18em;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+}
+.bt-tooltip-v {
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.bt-tooltip-sep {
+  height: 1px;
+  background: var(--panel-border);
+  margin: 6px -12px;
+}

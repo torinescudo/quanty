@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>VOID // quant.platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<style>
+  :root {
+    --bg-void: #02030a;
+    --bg-deeper: #01020608;
+    --panel-bg: rgba(8, 12, 24, 0.55);
+    --panel-border: rgba(94, 234, 212, 0.12);
+    --panel-border-strong: rgba(94, 234, 212, 0.28);
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-tertiary: #475569;
+    --text-dim: #2a3040;
+    --accent: #5eead4;          /* cyan-teal — live, positive */
+    --accent-soft: #5eead466;
+    --warn: #f0abfc;            /* magenta — warn, open positions */
+    --neg: #fb7185;             /* coral — neg */
+    --plasma: #a78bfa;          /* violet — secondary accent */
+    --solar: #fbbf24;           /* gold — highlight */
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: var(--bg-void);
+    color: var(--text-primary);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 13px;
+    line-height: 1.4;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  ::selection { background: var(--accent); color: var(--bg-void); }
+  .mono { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
+
+  /* === COSMIC BACKGROUND LAYERS === */
+  .stage {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  }
+  #starfield-far, #starfield-mid, #starfield-near {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+  }
+  .nebula {
+    position: absolute; inset: 0; overflow: hidden;
+  }
+  .nebula::before {
+    content: ""; position: absolute;
+    width: 80vw; height: 80vw;
+    top: -20vw; left: -10vw;
+    background: radial-gradient(circle, rgba(167,139,250,0.18) 0%, rgba(167,139,250,0.05) 30%, transparent 60%);
+    filter: blur(40px);
+    animation: drift1 60s ease-in-out infinite alternate;
+  }
+  .nebula::after {
+    content: ""; position: absolute;
+    width: 70vw; height: 70vw;
+    bottom: -20vw; right: -10vw;
+    background: radial-gradient(circle, rgba(94,234,212,0.12) 0%, rgba(94,234,212,0.03) 35%, transparent 65%);
+    filter: blur(50px);
+    animation: drift2 75s ease-in-out infinite alternate;
+  }
+  @keyframes drift1 { 0% { transform: translate(0,0); } 100% { transform: translate(8vw, 5vw); } }
+  @keyframes drift2 { 0% { transform: translate(0,0); } 100% { transform: translate(-6vw, -8vw); } }
+
+  /* Subtle scanline + vignette */
+  .vignette {
+    position: fixed; inset: 0; pointer-events: none; z-index: 1;
+    background: radial-gradient(ellipse at center, transparent 40%, rgba(2,3,10,0.5) 100%);
+  }
+
+  /* === SOLAR CANVAS === */
+  #solar-canvas {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    pointer-events: none;
+  }
+
+  /* === LAYOUT === */
+  .app {
+    position: relative; z-index: 2;
+    min-height: 100vh;
+    padding: 32px 48px 40px;
+    display: flex; flex-direction: column;
+    gap: 28px;
+    max-width: 1680px;
+    margin: 0 auto;
+  }
+  body[data-density="compact"] .app { padding: 22px 32px; gap: 20px; }
+  body[data-density="spacious"] .app { padding: 44px 64px; gap: 36px; }
+
+  /* === TOPBAR === */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 4px 0;
+    background: transparent;
+    border: none;
+  }
+  .topbar-left, .topbar-right { display: flex; align-items: center; gap: 22px; }
+  .brand-block { display: flex; align-items: center; gap: 12px; }
+  .brand-mark {
+    width: 28px; height: 28px; position: relative;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .brand-mark svg { width: 100%; height: 100%; }
+  .brand-text {
+    display: flex; flex-direction: column; line-height: 1.05;
+  }
+  .brand-name {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600; font-size: 16px;
+    letter-spacing: 0.32em;
+    color: var(--text-primary);
+  }
+  .brand-sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    color: var(--text-tertiary);
+    margin-top: 3px;
+  }
+  .topbar-stat {
+    display: flex; align-items: center; gap: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+  }
+  .topbar-stat-label { color: var(--text-tertiary); }
+  .pulse-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent), 0 0 16px var(--accent-soft);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  .pulse-dot.dead {
+    background: var(--neg);
+    box-shadow: 0 0 6px var(--neg);
+    animation: none;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.85); }
+  }
+  .clock {
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--accent);
+    font-size: 12px;
+    letter-spacing: 0.18em;
+  }
+
+  /* === MISSION STATUS BANNER === */
+  .mission-banner {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 36px;
+    padding: 22px 32px;
+    background: linear-gradient(90deg, rgba(94,234,212,0.05), rgba(167,139,250,0.04) 50%, transparent);
+    border: 1px solid var(--panel-border);
+    border-left: 2px solid var(--accent);
+    border-radius: 2px;
+    backdrop-filter: blur(12px);
+  }
+  .mission-state {
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .mission-state-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; letter-spacing: 0.22em;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+  }
+  .mission-state-value {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 30px; font-weight: 400;
+    letter-spacing: 0.22em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+  .mission-trail {
+    display: flex; align-items: center; gap: 14px;
+    overflow: hidden;
+  }
+  .mission-tag {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .mission-tag .k { color: var(--text-tertiary); margin-right: 6px; }
+  .mission-tag .v { color: var(--text-primary); }
+  .mission-divider {
+    width: 4px; height: 4px; border-radius: 50%;
+    background: var(--text-dim);
+  }
+
+  /* === HUD METRICS WITH ORBITAL RINGS === */
+  .hud-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 22px;
+  }
+  .hud-card {
+    position: relative;
+    background: rgba(6, 9, 18, 0.42);
+    border: 1px solid var(--panel-border);
+    border-radius: 2px;
+    padding: 26px 28px 24px;
+    backdrop-filter: blur(14px);
+    overflow: hidden;
+    min-height: 160px;
+    display: flex; flex-direction: column; justify-content: space-between;
+  }
+  .hud-card::before {
+    content: ""; position: absolute;
+    top: 0; left: 0; width: 24px; height: 1px;
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent);
+  }
+  .hud-card::after {
+    content: ""; position: absolute;
+    top: 0; left: 0; width: 1px; height: 24px;
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent);
+  }
+  .hud-orbit {
+    position: absolute;
+    top: -30px; right: -30px;
+    width: 110px; height: 110px;
+    pointer-events: none;
+    opacity: 0.7;
+  }
+  .hud-orbit svg { width: 100%; height: 100%; }
+  .hud-label {
+    display: flex; align-items: center; gap: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.22em;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    z-index: 1;
+  }
+  .hud-label-tick {
+    width: 5px; height: 5px;
+    background: var(--accent);
+    border-radius: 50%;
+    box-shadow: 0 0 4px var(--accent);
+  }
+  .hud-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 36px;
+    font-weight: 400;
+    color: var(--text-primary);
+    line-height: 1;
+    margin-top: 14px;
+    z-index: 1;
+    position: relative;
+    letter-spacing: -0.01em;
+  }
+  .hud-sub {
+    display: flex; align-items: center; gap: 8px;
+    margin-top: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text-secondary);
+    z-index: 1;
+    position: relative;
+  }
+  .hud-sub-chip {
+    padding: 2px 6px;
+    border: 1px solid currentColor;
+    border-radius: 2px;
+    font-size: 9px;
+    letter-spacing: 0.1em;
+  }
+  .pos { color: var(--accent) !important; }
+  .neg { color: var(--neg) !important; }
+  .warn { color: var(--warn) !important; }
+  .plasma { color: var(--plasma) !important; }
+
+  /* === MAIN GRID === */
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1.5fr 1fr;
+    gap: 22px;
+  }
+  .col { display: flex; flex-direction: column; gap: 22px; }
+
+  .panel {
+    position: relative;
+    background: rgba(6, 9, 18, 0.42);
+    border: 1px solid var(--panel-border);
+    border-radius: 2px;
+    backdrop-filter: blur(14px);
+  }
+  .panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 24px;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .panel-head-left {
+    display: flex; align-items: center; gap: 10px;
+  }
+  .panel-head-marker {
+    width: 6px; height: 6px;
+    background: var(--accent);
+    transform: rotate(45deg);
+    box-shadow: 0 0 5px var(--accent);
+  }
+  .panel-head-title {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+  }
+  .panel-head-right {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.16em;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+  }
+  .panel-body { padding: 22px 24px; }
+
+  /* === TRAJECTORY (equity curve) === */
+  .trajectory-wrap {
+    position: relative;
+    height: 320px;
+    width: 100%;
+  }
+  .trajectory-wrap canvas { display: block; }
+  .trajectory-legend {
+    position: absolute; top: 10px; left: 14px;
+    display: flex; flex-direction: column; gap: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; color: var(--text-tertiary);
+    letter-spacing: 0.12em;
+  }
+  .trajectory-legend .v { color: var(--accent); font-size: 11px; }
+
+  /* === ORBITAL POSITIONS (open trades) === */
+  .orbital-wrap {
+    position: relative;
+    height: 400px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .orbital-svg { width: 100%; height: 100%; }
+  .orbital-core {
+    position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    pointer-events: none;
+  }
+  .orbital-core-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.22em;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+  }
+  .orbital-core-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 20px;
+    font-weight: 500;
+    color: var(--text-primary);
+    margin-top: 4px;
+  }
+  .orbital-core-sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+  }
+  .orbital-empty {
+    position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+  }
+
+  /* === TICKERS / CONSTELLATION === */
+  .ticker-list {
+    display: flex; flex-direction: column;
+    max-height: 540px; overflow-y: auto;
+  }
+  .ticker-row {
+    display: grid;
+    grid-template-columns: 22px 64px 1fr 78px 56px 14px;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 4px;
+    border-bottom: 1px solid rgba(94,234,212,0.04);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    transition: background 0.15s;
+  }
+  .ticker-row:last-child { border-bottom: none; }
+  .ticker-row:hover { background: rgba(94,234,212,0.03); }
+  .ticker-idx {
+    font-size: 9px;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+  }
+  .ticker-sym {
+    color: var(--text-primary);
+    font-weight: 500;
+    letter-spacing: 0.05em;
+  }
+  .ticker-spark { height: 18px; }
+  .ticker-price {
+    text-align: right;
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+  .ticker-chg {
+    text-align: right;
+    font-size: 10px;
+  }
+  .ticker-arr {
+    text-align: center;
+    font-size: 9px;
+  }
+  @keyframes flashup { 0% { background: rgba(94,234,212,0.18); } 100% { background: transparent; } }
+  @keyframes flashdown { 0% { background: rgba(251,113,133,0.18); } 100% { background: transparent; } }
+  .flash-up { animation: flashup 0.6s; }
+  .flash-down { animation: flashdown 0.6s; }
+
+  /* === PERF BARS === */
+  .perf-list { display: flex; flex-direction: column; gap: 4px; }
+  .perf-row {
+    display: grid;
+    grid-template-columns: 80px 1fr 70px;
+    gap: 12px; align-items: center;
+    padding: 6px 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+  }
+  .perf-pair { color: var(--text-primary); letter-spacing: 0.04em; }
+  .perf-track {
+    height: 8px;
+    background: rgba(94,234,212,0.04);
+    border: 1px solid rgba(94,234,212,0.08);
+    position: relative;
+    overflow: hidden;
+  }
+  .perf-track::before {
+    content: ""; position: absolute;
+    left: 50%; top: 0; bottom: 0; width: 1px;
+    background: rgba(148,163,184,0.2);
+  }
+  .perf-fill {
+    position: absolute; top: 0; bottom: 0;
+    background: var(--accent);
+    box-shadow: 0 0 4px var(--accent-soft);
+  }
+  .perf-fill.neg {
+    background: var(--neg);
+    box-shadow: 0 0 4px rgba(251,113,133,0.3);
+  }
+  .perf-val { text-align: right; font-size: 10px; }
+
+  /* === TRANSMISSIONS / TRADES LOG === */
+  .log-list {
+    display: flex; flex-direction: column;
+    max-height: 320px; overflow-y: auto;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .log-row {
+    display: grid;
+    grid-template-columns: 16px 60px 70px 90px 80px 1fr;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 6px;
+    font-size: 11px;
+    border-bottom: 1px solid rgba(94,234,212,0.04);
+  }
+  .log-icon {
+    width: 8px; height: 8px;
+    border: 1px solid currentColor;
+    transform: rotate(45deg);
+  }
+  .log-icon.open { color: var(--warn); background: var(--warn); box-shadow: 0 0 4px var(--warn); }
+  .log-icon.close-pos { color: var(--accent); background: var(--accent); box-shadow: 0 0 4px var(--accent); }
+  .log-icon.close-neg { color: var(--neg); background: var(--neg); box-shadow: 0 0 4px var(--neg); }
+  .log-time { color: var(--text-tertiary); font-size: 10px; }
+  .log-action {
+    font-size: 9px; letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+  .log-pair { color: var(--text-primary); letter-spacing: 0.04em; }
+  .log-pnl { text-align: right; }
+  .log-note { color: var(--text-tertiary); font-size: 10px; letter-spacing: 0.06em; }
+
+  /* === SCROLLBARS === */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(94,234,212,0.15); border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(94,234,212,0.3); }
+
+  /* === FOOTER === */
+  .foot {
+    margin-top: 6px;
+    display: flex; justify-content: space-between;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.18em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    padding: 0 4px;
+  }
+
+  /* density tweaks */
+  body[data-density="compact"] .hud-card { padding: 18px 20px; min-height: 130px; }
+  body[data-density="compact"] .hud-value { font-size: 28px; }
+  body[data-density="compact"] .panel-body { padding: 14px 16px; }
+  body[data-density="compact"] .ticker-row { padding: 6px 4px; }
+  body[data-density="compact"] .hud-row { gap: 14px; }
+  body[data-density="compact"] .main-grid { gap: 14px; }
+  body[data-density="compact"] .col { gap: 14px; }
+
+  body[data-density="spacious"] .hud-card { padding: 32px 36px; min-height: 180px; }
+  body[data-density="spacious"] .hud-value { font-size: 44px; }
+  body[data-density="spacious"] .hud-row { gap: 28px; }
+  body[data-density="spacious"] .main-grid { gap: 28px; }
+  body[data-density="spacious"] .col { gap: 28px; }
+
+  /* responsive */
+  @media (max-width: 1280px) {
+    .hud-row { grid-template-columns: repeat(2, 1fr); }
+    .main-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body data-density="normal">
+
+<div class="stage">
+  <canvas id="starfield-far"></canvas>
+  <canvas id="starfield-mid"></canvas>
+  <canvas id="starfield-near"></canvas>
+  <div class="nebula"></div>
+  <canvas id="solar-canvas"></canvas>
+</div>
+<div class="vignette"></div>
+
+<div class="app" id="app">
+  <!-- TOPBAR -->
+  <div class="topbar">
+    <div class="topbar-left">
+      <div class="brand-block">
+        <div class="brand-mark">
+          <svg viewBox="0 0 32 32" fill="none">
+            <circle cx="16" cy="16" r="14" stroke="#5eead4" stroke-width="0.8" opacity="0.3"/>
+            <circle cx="16" cy="16" r="10" stroke="#5eead4" stroke-width="0.8" opacity="0.5"/>
+            <circle cx="16" cy="16" r="3" fill="#5eead4"/>
+            <circle cx="16" cy="2" r="1.2" fill="#a78bfa"/>
+            <circle cx="30" cy="16" r="1" fill="#f0abfc"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-name">VOID</span>
+          <span class="brand-sub">QUANT.PLATFORM · v0.2 / freqtrade</span>
+        </div>
+      </div>
+      <div class="topbar-stat">
+        <span class="pulse-dot dead" id="pulseDot"></span>
+        <span id="connStatus" style="color: var(--neg);">UPLINK · CONNECTING</span>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div class="topbar-stat"><span class="topbar-stat-label">STRAT</span><span id="topStrat">—</span></div>
+      <div class="topbar-stat"><span class="topbar-stat-label">MODE</span><span id="topMode">—</span></div>
+      <div class="topbar-stat"><span class="topbar-stat-label">EXCH</span><span>COINBASE</span></div>
+      <div class="clock mono" id="clock">--:--:--</div>
+    </div>
+  </div>
+
+  <!-- MISSION STATUS -->
+  <div class="mission-banner">
+    <div class="mission-state">
+      <span class="mission-state-label">Mission Status</span>
+      <span class="mission-state-value" id="missionState">CRUISE</span>
+    </div>
+    <div class="mission-trail">
+      <span class="mission-tag"><span class="k">UPTIME</span><span class="v" id="mUptime">00:00:00</span></span>
+      <span class="mission-divider"></span>
+      <span class="mission-tag"><span class="k">TRADES</span><span class="v" id="mTradesCount">—</span></span>
+      <span class="mission-divider"></span>
+      <span class="mission-tag"><span class="k">PAIRS</span><span class="v" id="mPairs">14</span></span>
+      <span class="mission-divider"></span>
+      <span class="mission-tag"><span class="k">UPLINK</span><span class="v mono" id="mTickRate">0 t/s</span></span>
+      <span class="mission-divider"></span>
+      <span class="mission-tag"><span class="k">LATENCY</span><span class="v mono" id="mLatency">— ms</span></span>
+    </div>
+    <div class="topbar-stat">
+      <span class="topbar-stat-label">SECTOR</span>
+      <span style="color: var(--plasma);">SPOT · LONG</span>
+    </div>
+  </div>
+
+  <!-- HUD METRICS -->
+  <div class="hud-row">
+    <div class="hud-card">
+      <div class="hud-orbit">
+        <svg viewBox="0 0 100 100" fill="none">
+          <circle cx="50" cy="50" r="38" stroke="#5eead4" stroke-width="0.5" opacity="0.4"/>
+          <circle cx="50" cy="50" r="28" stroke="#5eead4" stroke-width="0.4" opacity="0.25" stroke-dasharray="2 3"/>
+          <circle cx="88" cy="50" r="2" fill="#5eead4"/>
+        </svg>
+      </div>
+      <div>
+        <div class="hud-label"><span class="hud-label-tick"></span>EQUITY · USD</div>
+        <div class="hud-value mono" id="mEquity">—</div>
+      </div>
+      <div class="hud-sub" id="mEquityChg">—</div>
+    </div>
+    <div class="hud-card">
+      <div class="hud-orbit">
+        <svg viewBox="0 0 100 100" fill="none">
+          <circle cx="50" cy="50" r="38" stroke="#a78bfa" stroke-width="0.5" opacity="0.4"/>
+          <ellipse cx="50" cy="50" rx="38" ry="14" stroke="#a78bfa" stroke-width="0.4" opacity="0.3" transform="rotate(-25 50 50)"/>
+          <circle cx="78" cy="32" r="1.8" fill="#a78bfa"/>
+        </svg>
+      </div>
+      <div>
+        <div class="hud-label"><span class="hud-label-tick" style="background:var(--plasma);box-shadow:0 0 4px var(--plasma);"></span>PROFIT · ALL</div>
+        <div class="hud-value mono" id="mProfit">—</div>
+      </div>
+      <div class="hud-sub" id="mProfitSub">—</div>
+    </div>
+    <div class="hud-card">
+      <div class="hud-orbit">
+        <svg viewBox="0 0 100 100" fill="none">
+          <circle cx="50" cy="50" r="38" stroke="#f0abfc" stroke-width="0.5" opacity="0.4"/>
+          <circle cx="50" cy="50" r="22" stroke="#f0abfc" stroke-width="0.4" opacity="0.3"/>
+          <circle cx="50" cy="12" r="2" fill="#f0abfc"/>
+          <circle cx="72" cy="50" r="1.5" fill="#f0abfc" opacity="0.7"/>
+        </svg>
+      </div>
+      <div>
+        <div class="hud-label"><span class="hud-label-tick" style="background:var(--warn);box-shadow:0 0 4px var(--warn);"></span>POSITIONS · OPEN</div>
+        <div class="hud-value mono warn" id="mPos">0</div>
+      </div>
+      <div class="hud-sub warn" id="mPosSub">no exposure</div>
+    </div>
+    <div class="hud-card">
+      <div class="hud-orbit">
+        <svg viewBox="0 0 100 100" fill="none">
+          <circle cx="50" cy="50" r="38" stroke="#fbbf24" stroke-width="0.5" opacity="0.35"/>
+          <path d="M 50 12 A 38 38 0 0 1 88 50" stroke="#fbbf24" stroke-width="1.2" fill="none"/>
+          <circle cx="88" cy="50" r="2" fill="#fbbf24"/>
+        </svg>
+      </div>
+      <div>
+        <div class="hud-label"><span class="hud-label-tick" style="background:var(--solar);box-shadow:0 0 4px var(--solar);"></span>WIN RATE · 30D</div>
+        <div class="hud-value mono" id="mWin">—</div>
+      </div>
+      <div class="hud-sub" id="mWinSub">—</div>
+    </div>
+  </div>
+
+  <!-- MAIN GRID -->
+  <div class="main-grid">
+    <div class="col">
+      <!-- TRAJECTORY -->
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-head-left">
+            <div class="panel-head-marker"></div>
+            <div class="panel-head-title">Trajectory · Equity Curve · 30d</div>
+          </div>
+          <div class="panel-head-right" id="trajRange">cumulative · daily</div>
+        </div>
+        <div class="panel-body">
+          <div class="trajectory-wrap">
+            <canvas id="eqCanvas"></canvas>
+            <div class="trajectory-legend">
+              <span>APOGEE <span class="v mono" id="trajMax">—</span></span>
+              <span>PERIGEE <span class="v mono" id="trajMin" style="color:var(--neg);">—</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ORBITAL POSITIONS -->
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-head-left">
+            <div class="panel-head-marker" style="background: var(--warn); box-shadow: 0 0 5px var(--warn);"></div>
+            <div class="panel-head-title">Orbital · Open Positions</div>
+          </div>
+          <div class="panel-head-right" id="orbitalCount">0 active</div>
+        </div>
+        <div class="panel-body">
+          <div class="orbital-wrap">
+            <svg class="orbital-svg" id="orbitalSvg" viewBox="0 0 600 360" preserveAspectRatio="xMidYMid meet"></svg>
+            <div class="orbital-core">
+              <div class="orbital-core-label">Net Exposure</div>
+              <div class="orbital-core-value mono" id="orbitalExposure">$0.00</div>
+              <div class="orbital-core-sub" id="orbitalSubtext">awaiting positions</div>
+            </div>
+            <div class="orbital-empty" id="orbitalEmpty">— vacuum — no satellites in orbit —</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TRANSMISSIONS -->
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-head-left">
+            <div class="panel-head-marker" style="background: var(--plasma); box-shadow: 0 0 5px var(--plasma);"></div>
+            <div class="panel-head-title">Transmissions · Recent Trades</div>
+          </div>
+          <div class="panel-head-right">freqtrade · live</div>
+        </div>
+        <div class="panel-body">
+          <div class="log-list" id="logList">
+            <div style="color: var(--text-tertiary); padding: 16px 6px; font-size: 10px; letter-spacing: 0.18em;">— STANDBY · NO TRANSMISSIONS YET —</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col">
+      <!-- CONSTELLATION (tickers) -->
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-head-left">
+            <div class="panel-head-marker"></div>
+            <div class="panel-head-title">Constellation · Live Tickers</div>
+          </div>
+          <div class="panel-head-right" id="lastTickAgo">—</div>
+        </div>
+        <div class="panel-body" style="padding: 8px 12px;">
+          <div class="ticker-list" id="tickerList"></div>
+        </div>
+      </div>
+
+      <!-- PERF BY PAIR -->
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-head-left">
+            <div class="panel-head-marker" style="background: var(--solar); box-shadow: 0 0 5px var(--solar);"></div>
+            <div class="panel-head-title">Performance · By Pair · 30d</div>
+          </div>
+          <div class="panel-head-right">profit / pair</div>
+        </div>
+        <div class="panel-body">
+          <div class="perf-list" id="perfList">
+            <div style="color: var(--text-tertiary); padding: 8px 0; font-size: 10px; letter-spacing: 0.18em;">— AWAITING TRADES —</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span>VOID // QUANT.PLATFORM</span>
+    <span>REAL DATA · COINBASE WS · FREQTRADE REST :8000</span>
+    <span id="footTs">—</span>
+  </div>
+</div>
+
+<!-- Tweaks panel -->
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<div id="tweaks-root"></div>
+<script type="text/babel" src="void-tweaks.jsx"></script>
+
+<!-- Main app -->
+<script src="starfield.js"></script>
+<script src="solar.js"></script>
+<script src="void-app.js"></script>
+
+</body>
+</html>
