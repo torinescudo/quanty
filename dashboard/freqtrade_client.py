@@ -24,6 +24,12 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+# Retry policy for transient failures (network hiccups, freqtrade
+# restarting, 5xx responses). Small + bounded — we never want a stalled
+# bridge to mask a real outage. See ``FreqtradeClient.request``.
+RETRY_BACKOFFS: tuple[float, ...] = (0.5, 1.0, 2.0)
+
+
 class FreqtradeError(Exception):
     """Raised when the Freqtrade REST API is unreachable or returns an error."""
 
@@ -141,13 +147,12 @@ class FreqtradeClient:
                 headers=self._auth_headers(),
             )
 
-        try:
-            resp = await _do_request()
-        except httpx.HTTPError as exc:
-            raise FreqtradeError(
-                f"freqtrade unreachable at {self.base_url}: {exc}",
-                status_code=503,
-            ) from exc
+        resp = await _request_with_retry(
+            _do_request,
+            base_url=self.base_url,
+            method=method,
+            path=path,
+        )
 
         if resp.status_code == 401 and self.auth_enabled:
             # token expired — try refresh, then full login
@@ -156,13 +161,12 @@ class FreqtradeClient:
                 async with self._auth_lock:
                     self._access_token = None
                     await self._login()
-            try:
-                resp = await _do_request()
-            except httpx.HTTPError as exc:
-                raise FreqtradeError(
-                    f"freqtrade unreachable at {self.base_url}: {exc}",
-                    status_code=503,
-                ) from exc
+            resp = await _request_with_retry(
+                _do_request,
+                base_url=self.base_url,
+                method=method,
+                path=path,
+            )
 
         if resp.status_code >= 400:
             raise FreqtradeError(
@@ -242,3 +246,66 @@ def _safe_json(resp: httpx.Response) -> Any:
         return resp.json()
     except Exception:
         return resp.text
+
+
+async def _request_with_retry(
+    do_request,
+    *,
+    base_url: str,
+    method: str,
+    path: str,
+    backoffs: tuple[float, ...] = RETRY_BACKOFFS,
+):
+    """Run ``do_request`` with bounded exponential backoff.
+
+    Retries on transient transport errors (``httpx.HTTPError``) and on
+    server-side 5xx responses. Client errors (4xx) and successful
+    responses are returned immediately. After the last attempt the
+    underlying error is wrapped in a :class:`FreqtradeError` with status
+    503 — the bridge surfaces that as ``freqtrade_unreachable``.
+    """
+    attempts = len(backoffs) + 1
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            resp = await do_request()
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if attempt < attempts - 1:
+                logger.warning(
+                    "freqtrade transient error, retrying",
+                    extra={
+                        "method": method,
+                        "path": path,
+                        "attempt": attempt + 1,
+                        "error": str(exc),
+                    },
+                )
+                await asyncio.sleep(backoffs[attempt])
+                continue
+            raise FreqtradeError(
+                f"freqtrade unreachable at {base_url}: {exc}",
+                status_code=503,
+            ) from exc
+        # Retry on 5xx — these are typically freqtrade restarting or
+        # under load. 4xx and 2xx pass straight through.
+        if 500 <= resp.status_code < 600 and attempt < attempts - 1:
+            logger.warning(
+                "freqtrade %s response, retrying",
+                resp.status_code,
+                extra={
+                    "method": method,
+                    "path": path,
+                    "attempt": attempt + 1,
+                    "status": resp.status_code,
+                },
+            )
+            await asyncio.sleep(backoffs[attempt])
+            continue
+        return resp
+    # Defensive: the loop above always returns or raises, but keep a
+    # fallback so type-checkers don't trip.
+    raise FreqtradeError(  # pragma: no cover
+        f"freqtrade unreachable at {base_url}: {last_exc}",
+        status_code=503,
+    )

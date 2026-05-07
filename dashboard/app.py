@@ -41,6 +41,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .backtest_jobs import BacktestJobManager
 from .freqtrade_client import FreqtradeClient, FreqtradeError
+from .logging_config import configure_logging, reset_request_id, set_request_id
 from .ws_manager import WebSocketManager
 
 try:  # python-dotenv is optional but listed in pyproject; load .env if present
@@ -168,18 +169,25 @@ class ConnectionState:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Configure structured (JSON) logging before any logger fires so
+    # the startup line itself is captured in the right format.
+    configure_logging()
     user, pw = _resolve_credentials()
     base_url = os.getenv("FREQTRADE_URL", "http://127.0.0.1:8080")
     app.state.client = FreqtradeClient(base_url=base_url, username=user, password=pw)
     app.state.notifications = NotificationStore()
     app.state.connection = ConnectionState()
+    app.state.started_at = time.time()
     ws_manager = WebSocketManager()
     app.state.ws = ws_manager
     app.state.backtests = BacktestJobManager(
         userdir=_project_root() / "user_data",
         on_event=ws_manager.broadcast,
     )
-    logger.info("bridge ready — freqtrade=%s auth=%s", base_url, bool(user and pw))
+    logger.info(
+        "bridge ready",
+        extra={"freqtrade_url": base_url, "auth": bool(user and pw)},
+    )
     try:
         yield
     finally:
@@ -205,6 +213,21 @@ def _make_app() -> FastAPI:
     )
 
     # ------------------------------------------------------------------
+    # Request-ID middleware: assigns/propagates ``X-Request-ID`` so each
+    # log line emitted within a request handler can be correlated.
+    # ------------------------------------------------------------------
+    @app.middleware("http")
+    async def _request_id_middleware(request: Request, call_next):
+        rid = request.headers.get("x-request-id") or uuid.uuid4().hex
+        token = set_request_id(rid)
+        try:
+            response = await call_next(request)
+        finally:
+            reset_request_id(token)
+        response.headers["X-Request-ID"] = rid
+        return response
+
+    # ------------------------------------------------------------------
     # Error mapping
     # ------------------------------------------------------------------
     @app.exception_handler(FreqtradeError)
@@ -219,11 +242,61 @@ def _make_app() -> FastAPI:
         )
 
     # ------------------------------------------------------------------
-    # Health
+    # Health & readiness
     # ------------------------------------------------------------------
     @app.get("/healthz")
     async def healthz():
+        # Liveness: the bridge process answered. Does NOT touch freqtrade
+        # — orchestration tools read this to decide whether to restart
+        # the container.
         return {"status": "ok"}
+
+    @app.get("/readyz")
+    async def readyz(request: Request):
+        # Readiness: the bridge is healthy AND freqtrade is reachable.
+        # Used by load balancers / k8s readiness probes. Returns 503 with
+        # the same JSON shape on failure so callers can introspect why.
+        client: FreqtradeClient = request.app.state.client
+        try:
+            await client.ping()
+        except FreqtradeError as exc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "not_ready",
+                    "freqtrade_reachable": False,
+                    "reason": str(exc),
+                },
+            )
+        return {"status": "ready", "freqtrade_reachable": True}
+
+    @app.get("/metrics")
+    async def metrics(request: Request):
+        # Lightweight JSON metrics — Prometheus integration is out of
+        # scope for Phase 7; this is enough for ad-hoc dashboards and
+        # smoke tests.
+        client: FreqtradeClient = request.app.state.client
+        ft_reachable = True
+        try:
+            await client.ping()
+        except FreqtradeError:
+            ft_reachable = False
+        manager: BacktestJobManager = request.app.state.backtests
+        try:
+            jobs = await manager.list()
+        except Exception:  # noqa: BLE001 — metrics must never raise
+            jobs = []
+        running = sum(1 for j in jobs if (j.get("status") or "").lower() == "running")
+        ws: WebSocketManager = request.app.state.ws
+        started_at = getattr(request.app.state, "started_at", time.time())
+        return {
+            "version": app.version,
+            "uptime_seconds": max(0.0, time.time() - started_at),
+            "freqtrade_reachable": ft_reachable,
+            "jobs_running": running,
+            "jobs_total": len(jobs),
+            "ws_clients": ws.client_count,
+        }
 
     # ------------------------------------------------------------------
     # Connection lifecycle

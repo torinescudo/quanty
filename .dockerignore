@@ -1,0 +1,40 @@
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+.venv
+venv
+env
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+build
+dist
+
+# Editor / OS
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Tests + docs are not needed in the runtime image
+tests
+*.md
+ROADMAP.md
+
+# Freqtrade artefacts — large, generated, mounted as volumes at runtime
+user_data/data
+user_data/backtest_results
+user_data/hyperopt_results
+
+# Local environment / secrets
+.env
+.env.local

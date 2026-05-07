@@ -129,3 +129,60 @@ Coinbase Advanced spot tiene fees del 0.6% taker / 0.4% maker — comparado con 
 Hyperopt es overfitting industrializado. 500 epochs sobre 2 años de datos encuentra un overfit perfecto. Splits estrictos, validación out-of-sample, y desconfianza permanente.
 Paper trading ≠ live trading. Slippage real, latencia, fills parciales, exchange downtime. Pasa al menos 30 días en paper antes de capital real, y empieza con 100€.
 Los 14 altcoins del dashboard son sugerencia. Personalizalos en `user_data/config.json` → `pair_whitelist`. Algunos no están en Coinbase (LDO, RPL) — comprueba antes con `freqtrade list-pairs --exchange coinbase`.
+
+## Operations
+
+Esta sección cubre el día a día del stack: arrancar/parar servicios, verificar estado, ajustar configuración por entorno.
+
+### Arranque con Docker Compose (recomendado)
+
+El repo trae un `docker-compose.yml` con dos servicios — `freqtrade` (engine oficial) y `bridge` (FastAPI con el dashboard). Ambos comparten una red privada y el bridge espera a que freqtrade reporte sano antes de empezar.
+
+```bash
+docker compose up -d                       # arranca en background
+docker compose ps                          # estado de los contenedores
+docker compose logs -f bridge              # logs JSON del bridge
+docker compose logs -f freqtrade           # logs del engine
+docker compose down                        # para todo
+docker compose build bridge                # reconstruye solo el bridge
+```
+
+Una vez arriba, el dashboard responde en `http://localhost:8000`. Freqtrade queda en la red interna (`http://freqtrade:8080` desde dentro de la red Docker, no expuesto al host).
+
+### Arranque sin Docker (desarrollo local)
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
+./scripts/paper.sh                         # freqtrade dry-run + bridge
+```
+
+`paper.sh` arranca freqtrade en `:8080` y uvicorn en `:8000` con `--reload`. Ctrl-C limpia ambos procesos.
+
+### Variables de entorno
+
+| Variable               | Default                                              | Descripción                                                               |
+| ---------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------- |
+| `FREQTRADE_URL`        | `http://127.0.0.1:8080` (host) / `http://freqtrade:8080` (compose) | Base URL de la REST API de freqtrade.                                     |
+| `FREQTRADE_USER`       | (vacío)                                              | Usuario JWT del `api_server` de freqtrade. Si no se pone, se lee de `user_data/config.json`. |
+| `FREQTRADE_PASS`       | (vacío)                                              | Password JWT correspondiente.                                             |
+| `LOG_LEVEL`            | `INFO`                                               | Nivel de logs del bridge (`DEBUG`/`INFO`/`WARNING`/`ERROR`). Salida en JSON línea-a-línea. |
+| `BRIDGE_CORS_ORIGINS`  | `http://localhost:8000,http://127.0.0.1:8000`        | Lista separada por comas de orígenes CORS permitidos.                     |
+
+Pueden venir de un `.env` en la raíz (Docker Compose lo carga automáticamente, y el bridge usa `python-dotenv` en arranque local).
+
+### Healthchecks y observabilidad
+
+El bridge expone tres endpoints sin autenticación pensados para sondas y dashboards:
+
+```bash
+curl localhost:8000/healthz                # liveness, no toca freqtrade
+curl localhost:8000/readyz                 # readiness, 503 si freqtrade está caído
+curl localhost:8000/metrics                # JSON con uptime, jobs activos, ws clients
+```
+
+`/healthz` siempre devuelve `200 {"status":"ok"}` mientras el proceso responda. Úsalo para `restart-on-fail` (compose, k8s liveness). `/readyz` valida que el bridge puede contactar freqtrade — devuelve `503` con `{"status":"not_ready","freqtrade_reachable":false,"reason":"..."}` cuando no, y es lo que lee `depends_on: condition: service_healthy` y los k8s readiness probes.
+
+Los logs son JSON estructurado (un objeto por línea con `ts`, `level`, `logger`, `msg`, `module`, `line`, opcional `request_id`). Cada request HTTP recibe un `X-Request-ID` automático (generado o reenviado desde el cliente) que se propaga a todas las líneas de log emitidas dentro de su contexto — útil para correlacionar errores en agregadores tipo Loki o Datadog.
+
+El cliente de freqtrade reintenta automáticamente fallos transitorios (errores de transporte y respuestas 5xx) con backoff exponencial acotado (0.5s → 1s → 2s, máximo 3 reintentos). Errores 4xx pasan directos sin reintento. Tras agotar reintentos el bridge devuelve `503 freqtrade_unreachable` al cliente.
