@@ -101,6 +101,11 @@
 
     bridgeOnline: true,
     reconnecting: false,
+
+    // Backtest / Hyperopt jobs (in-memory, populated from bridge + WS).
+    // Keyed by jobId for O(1) updates.
+    backtestJobs: {},   // { [jobId]: { status, log[], result, started_at, ... } }
+    hyperoptJobs: {},   // same shape, but with current_epoch/best_params/...
   };
 
   // ------------------------------------------------------------
@@ -195,6 +200,118 @@
       state.bridgeOnline = true;
       state.reconnecting = false;
       emit();
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Backtest / Hyperopt job helpers
+  // ------------------------------------------------------------
+  function jobBucket(kind) {
+    return kind === 'hyperopt' ? state.hyperoptJobs : state.backtestJobs;
+  }
+  function adaptJob(j) {
+    if (!j || typeof j !== 'object') return null;
+    const id = j.jobId || j.id;
+    if (!id) return null;
+    return {
+      id,
+      kind: j.kind || 'backtest',
+      status: j.status || 'running',
+      strategy: j.strategy || '',
+      timerange: j.timerange || '',
+      pairs: j.pairs || null,
+      timeframe: j.timeframe || null,
+      started_at: Number(j.started_at || 0) * 1000 || tsOf(j.started_at),
+      finished_at: j.finished_at ? (Number(j.finished_at) * 1000 || tsOf(j.finished_at)) : null,
+      log: Array.isArray(j.log) ? j.log : [],
+      result: j.result || null,
+      error: j.error || null,
+      epochs: j.epochs ?? null,
+      current_epoch: j.current_epoch ?? null,
+      best_params: j.best_params ?? null,
+      return_code: j.return_code ?? null,
+    };
+  }
+  function upsertJob(kind, jobLike) {
+    const adapted = adaptJob(jobLike);
+    if (!adapted) return;
+    adapted.kind = kind;
+    const bucket = jobBucket(kind);
+    const prev = bucket[adapted.id] || {};
+    const merged = {
+      ...prev,
+      ...adapted,
+      // Preserve previously-streamed log if the new payload omits it.
+      log: adapted.log.length ? adapted.log : (prev.log || []),
+    };
+    if (kind === 'hyperopt') {
+      state.hyperoptJobs = { ...state.hyperoptJobs, [adapted.id]: merged };
+    } else {
+      state.backtestJobs = { ...state.backtestJobs, [adapted.id]: merged };
+    }
+    return merged;
+  }
+  function applyJobEvent(kind, msg) {
+    const id = msg.jobId || msg.id;
+    if (!id) return;
+    const bucket = jobBucket(kind);
+    const prev = bucket[id] || {
+      id,
+      kind,
+      log: [],
+      status: 'running',
+      strategy: msg.strategy || '',
+      timerange: msg.timerange || '',
+      started_at: Date.now(),
+    };
+    const next = { ...prev };
+    if (msg.event === 'started') {
+      next.status = 'running';
+      if (msg.strategy) next.strategy = msg.strategy;
+      if (msg.timerange) next.timerange = msg.timerange;
+      next.started_at = next.started_at || Date.now();
+    } else if (msg.event === 'progress') {
+      if (Array.isArray(msg.log) && msg.log.length) {
+        // Cap at 500 lines client-side.
+        const combined = [...(prev.log || []), ...msg.log];
+        next.log = combined.slice(-500);
+      }
+      if (msg.current_epoch != null) next.current_epoch = msg.current_epoch;
+    } else if (msg.event === 'completed') {
+      next.status = 'completed';
+      next.finished_at = Date.now();
+      if (msg.result) next.result = msg.result;
+    } else if (msg.event === 'failed') {
+      next.status = 'failed';
+      next.finished_at = Date.now();
+      next.error = msg.error || next.error;
+    } else if (msg.event === 'cancelled') {
+      next.status = 'cancelled';
+      next.finished_at = Date.now();
+    }
+    if (kind === 'hyperopt') {
+      state.hyperoptJobs = { ...state.hyperoptJobs, [id]: next };
+    } else {
+      state.backtestJobs = { ...state.backtestJobs, [id]: next };
+    }
+    emit();
+  }
+
+  async function fetchBacktestJobs() {
+    try {
+      const data = await request('/api/backtest/jobs');
+      const next = { ...state.backtestJobs };
+      const nextHo = { ...state.hyperoptJobs };
+      (data?.jobs || []).forEach(j => {
+        const adapted = adaptJob(j);
+        if (!adapted) return;
+        if ((j.kind || 'backtest') === 'hyperopt') nextHo[adapted.id] = { ...(nextHo[adapted.id] || {}), ...adapted };
+        else next[adapted.id] = { ...(next[adapted.id] || {}), ...adapted };
+      });
+      state.backtestJobs = next;
+      state.hyperoptJobs = nextHo;
+    } catch (_) {
+      // Silent — bridge offline banner already handles it.
     }
   }
 
@@ -383,6 +500,7 @@
       fetchTransfers(),
       fetchStrategies(),
       fetchNotifications(),
+      fetchBacktestJobs(),
     ]);
     emit();
   }
@@ -453,6 +571,8 @@
         if (window.__toast) {
           window.__toast({ kind: n.kind, msg: n.msg });
         }
+      } else if (channel === 'backtest' || channel === 'hyperopt') {
+        applyJobEvent(channel, msg);
       }
     };
     sock.onerror = () => { /* will fall through to onclose */ };
@@ -676,6 +796,115 @@
       emit();
       try { await request('/api/notifications', { method: 'DELETE' }); } catch (_) {}
       return { ok: true };
+    },
+
+    // ---------- Backtest ----------
+    backtest: {
+      async run({ strategy, timerange, pairs, timeframe } = {}) {
+        if (!strategy) throw new Error("backtest.run: 'strategy' required");
+        const res = await request('/api/backtest/run', {
+          method: 'POST',
+          body: JSON.stringify({ strategy, timerange, pairs, timeframe }),
+        });
+        // Seed local job entry so UI shows it immediately.
+        if (res?.jobId) {
+          upsertJob('backtest', {
+            jobId: res.jobId,
+            status: res.status || 'running',
+            strategy,
+            timerange,
+            pairs,
+            timeframe,
+            started_at: Date.now() / 1000,
+            log: [],
+          });
+          emit();
+        }
+        return res;
+      },
+      async jobs() {
+        await fetchBacktestJobs();
+        emit();
+        const out = Object.values(state.backtestJobs).sort(
+          (a, b) => (b.started_at || 0) - (a.started_at || 0),
+        );
+        return out;
+      },
+      async job(jobId) {
+        if (!jobId) throw new Error('backtest.job: jobId required');
+        const data = await request(`/api/backtest/jobs/${encodeURIComponent(jobId)}`);
+        const merged = upsertJob('backtest', data);
+        emit();
+        return merged;
+      },
+      async cancel(jobId) {
+        if (!jobId) throw new Error('backtest.cancel: jobId required');
+        const res = await request(
+          `/api/backtest/jobs/${encodeURIComponent(jobId)}/cancel`,
+          { method: 'POST' },
+        );
+        // Optimistic local update; the WS event will confirm.
+        const prev = state.backtestJobs[jobId];
+        if (prev) {
+          state.backtestJobs = { ...state.backtestJobs, [jobId]: { ...prev, status: 'cancelled' } };
+          emit();
+        }
+        return res;
+      },
+    },
+
+    // ---------- Hyperopt ----------
+    hyperopt: {
+      async run({ strategy, epochs, timerange, spaces, loss, timeframe } = {}) {
+        if (!strategy) throw new Error("hyperopt.run: 'strategy' required");
+        const res = await request('/api/hyperopt/run', {
+          method: 'POST',
+          body: JSON.stringify({ strategy, epochs, timerange, spaces, loss, timeframe }),
+        });
+        if (res?.jobId) {
+          upsertJob('hyperopt', {
+            jobId: res.jobId,
+            status: res.status || 'running',
+            strategy,
+            timerange,
+            timeframe,
+            epochs: epochs ?? null,
+            spaces: spaces ?? null,
+            loss: loss ?? null,
+            started_at: Date.now() / 1000,
+            log: [],
+          });
+          emit();
+        }
+        return res;
+      },
+      async jobs() {
+        await fetchBacktestJobs();
+        emit();
+        return Object.values(state.hyperoptJobs).sort(
+          (a, b) => (b.started_at || 0) - (a.started_at || 0),
+        );
+      },
+      async job(jobId) {
+        if (!jobId) throw new Error('hyperopt.job: jobId required');
+        const data = await request(`/api/hyperopt/jobs/${encodeURIComponent(jobId)}`);
+        const merged = upsertJob('hyperopt', data);
+        emit();
+        return merged;
+      },
+      async cancel(jobId) {
+        if (!jobId) throw new Error('hyperopt.cancel: jobId required');
+        const res = await request(
+          `/api/hyperopt/jobs/${encodeURIComponent(jobId)}/cancel`,
+          { method: 'POST' },
+        );
+        const prev = state.hyperoptJobs[jobId];
+        if (prev) {
+          state.hyperoptJobs = { ...state.hyperoptJobs, [jobId]: { ...prev, status: 'cancelled' } };
+          emit();
+        }
+        return res;
+      },
     },
   };
 

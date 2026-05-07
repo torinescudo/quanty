@@ -18,6 +18,8 @@ function BacktestView() {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState(null);
+  const [mode, setMode] = useState('idle');     // 'idle' | 'bridge' | 'demo'
+  const [jobId, setJobId] = useState(null);
   const [history, setHistory] = useState(() => {
     try { return JSON.parse(localStorage.getItem('void_bt_runs') || '[]'); } catch { return []; }
   });
@@ -29,31 +31,88 @@ function BacktestView() {
     if (st) setParams({ ...st.params });
   }, [stratId]);
 
+  // pick up bridge updates for the current job (WS + polling both feed
+  // state.backtestJobs in void-api.js)
+  useEffect(() => {
+    if (!jobId) return;
+    const job = s.backtestJobs?.[jobId];
+    if (!job) return;
+    if (job.status === 'completed' && job.result) {
+      const adapted = adaptBridgeResult(job.result, capital);
+      setResult(adapted);
+      setProgress(1);
+      setRunning(false);
+      const item = {
+        id: jobId,
+        ts: Date.now(),
+        strategy: s.strategies.find(x => x.id === stratId)?.name || stratId,
+        pair, rangeDays, capital, params: { ...params },
+        pnl: adapted.pnl, pnlPct: adapted.pnlPct, sharpe: adapted.sharpe,
+        maxDD: adapted.maxDD, trades: adapted.trades.length, winRate: adapted.winRate,
+        bridge: true,
+      };
+      persistHistory([item, ...history].slice(0, 30));
+    } else if (job.status === 'failed' || job.status === 'cancelled') {
+      setRunning(false);
+      window.__toast?.({ kind: 'system', msg: `Backtest ${job.status}: ${job.error || ''}` });
+    }
+  }, [jobId, s.backtestJobs?.[jobId]?.status]);
+
   function persistHistory(list) {
     setHistory(list);
     try { localStorage.setItem('void_bt_runs', JSON.stringify(list.slice(0, 30))); } catch {}
   }
 
-  // ---- synthetic price series + run engine ----
+  function timerangeFromDays(days) {
+    const end = new Date();
+    const start = new Date(end.getTime() - days * 86400_000);
+    const fmt = d => d.toISOString().slice(0, 10).replace(/-/g, '');
+    return `${fmt(start)}-${fmt(end)}`;
+  }
+
+  // ---- run: try the real bridge first, fall back to synthetic engine ----
   async function run() {
     setRunning(true);
     setProgress(0);
     setResult(null);
     cancelRef.current = false;
 
-    // Seed series from current live price
-    const seed = (window.__livePrices?.[pair]) || 100;
-    const totalBars = rangeDays * 24; // hourly bars
-    const series = generateSeries(seed, totalBars, stratId);
+    // Try the real backtest endpoint. The bridge replies 503 if freqtrade
+    // is not installed locally, in which case we transparently fall back
+    // to the in-browser synthetic engine.
+    if (window.api?.backtest?.run) {
+      try {
+        const stratName = s.strategies.find(x => x.id === stratId)?.name || stratId;
+        const out = await window.api.backtest.run({
+          strategy: stratName,
+          timerange: timerangeFromDays(rangeDays),
+          pairs: [pair.replace('-', '/')],
+          timeframe: '1h',
+        });
+        if (out && out.jobId) {
+          setMode('bridge');
+          setJobId(out.jobId);
+          // The useEffect above will populate `result` from state.backtestJobs.
+          return;
+        }
+      } catch (e) {
+        // 503 or network error → fall through to demo mode.
+        console.warn('[backtest] bridge unavailable, using demo engine:', e?.message);
+      }
+    }
 
-    // Engine loop with chunked yields for animated progress
+    // ---- demo fallback ----
+    setMode('demo');
+    setJobId(null);
+    const seed = (window.__livePrices?.[pair]) || 100;
+    const totalBars = rangeDays * 24;
+    const series = generateSeries(seed, totalBars, stratId);
     const out = await runEngine({
       series, stratId, params, capital,
       feeBps, slipBps, pair,
       onProgress: p => setProgress(p),
       cancelRef,
     });
-
     if (!cancelRef.current) {
       setResult(out);
       const item = {
@@ -63,13 +122,20 @@ function BacktestView() {
         pair, rangeDays, capital, params: {...params},
         pnl: out.pnl, pnlPct: out.pnlPct, sharpe: out.sharpe,
         maxDD: out.maxDD, trades: out.trades.length, winRate: out.winRate,
+        bridge: false,
       };
       persistHistory([item, ...history].slice(0, 30));
     }
     setRunning(false);
   }
 
-  function abort() { cancelRef.current = true; }
+  async function abort() {
+    cancelRef.current = true;
+    if (mode === 'bridge' && jobId && window.api?.backtest?.cancel) {
+      try { await window.api.backtest.cancel(jobId); } catch {}
+    }
+    setRunning(false);
+  }
 
   function deployToLive() {
     if (!result) return;
@@ -181,13 +247,22 @@ function BacktestView() {
                 </button>
               ) : (
                 <button className="btn btn-danger" onClick={abort} style={{flex:1, justifyContent:'center'}}>
-                  ◌ ABORT · {(progress*100).toFixed(0)}%
+                  ◌ ABORT · {mode === 'bridge' ? (jobId || '').slice(-6) : (progress*100).toFixed(0)+'%'}
                 </button>
               )}
               <button className="btn" disabled={!result} onClick={deployToLive} title="Push tuned params to live strategy">
                 ↑ DEPLOY PARAMS
               </button>
             </div>
+
+            {mode !== 'idle' && (
+              <div className="bt-mode-tag mono" style={{
+                marginTop: 8, fontSize: 10, letterSpacing: '0.18em',
+                color: mode === 'bridge' ? 'var(--accent)' : 'var(--text-tertiary)',
+              }}>
+                {mode === 'bridge' ? '◉ FREQTRADE · LIVE BACKTEST' : '◇ DEMO · SYNTHETIC ENGINE'}
+              </div>
+            )}
 
             {running && (
               <div className="bt-progress">
@@ -772,6 +847,71 @@ async function runEngine({ series, stratId, params, capital, feeBps, slipBps, pa
     pnl, pnlPct, sharpe, sortino, maxDD: maxDD * 100, calmar,
     winRate, avgWin, avgLoss, profitFactor,
     exposure, fees: totalFees, bars: equity.length,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// adaptBridgeResult — map the bridge's parsed freqtrade JSON into the shape
+// the existing UI expects (equity[], drawdownSeries[], trades w/ closeBar, etc).
+// ---------------------------------------------------------------------------
+function adaptBridgeResult(bridgeResult, capital) {
+  const r = bridgeResult || {};
+  const equityCurve = Array.isArray(r.equity_curve) ? r.equity_curve : [];
+
+  // equity_curve from the bridge is a list of [ts, runningProfit]. Convert
+  // to absolute balance (capital + running profit) and prepend the seed.
+  let equity = [capital];
+  if (equityCurve.length) {
+    for (const pt of equityCurve) {
+      const profit = Array.isArray(pt) ? pt[1] : pt?.balance;
+      equity.push(capital + (Number(profit) || 0));
+    }
+  } else {
+    // No curve available — synthesise a flat line of length 2.
+    equity.push(capital + (Number(r.profit_total) || 0));
+  }
+
+  // running drawdown from peak
+  const drawdownSeries = [];
+  let peak = equity[0];
+  for (const v of equity) {
+    if (v > peak) peak = v;
+    drawdownSeries.push(peak > 0 ? (peak - v) / peak : 0);
+  }
+
+  // map trades with a closeBar index so the chart can place markers
+  const tradesIn = Array.isArray(r.trades) ? r.trades : [];
+  const trades = tradesIn.map((t, i) => ({
+    pair: t.pair,
+    side: t.side || 'long',
+    pnl: Number(t.profit_abs ?? 0),
+    pnlPct: Number(t.profit_pct ?? 0),
+    duration: t.duration,
+    openBar: Math.floor((i / Math.max(1, tradesIn.length)) * (equity.length - 1)),
+    closeBar: Math.min(equity.length - 1, Math.floor(((i + 1) / Math.max(1, tradesIn.length)) * (equity.length - 1))),
+  }));
+
+  return {
+    equity,
+    drawdownSeries,
+    trades,
+    pnl: Number(r.profit_total ?? 0),
+    pnlPct: Number(r.profit_total_pct ?? 0),
+    sharpe: Number(r.sharpe ?? 0),
+    sortino: Number(r.sortino ?? 0),
+    calmar: Number(r.calmar ?? 0),
+    maxDD: Number(r.max_drawdown_pct ?? 0),
+    winRate: Number(r.win_rate ?? 0),
+    profitFactor: Number(r.profit_factor ?? 0),
+    avgWin: 0,
+    avgLoss: 0,
+    exposure: 0,
+    fees: 0,
+    bars: equity.length,
+    bestPair: r.best_pair,
+    worstPair: r.worst_pair,
+    avgDuration: r.avg_duration,
+    bridge: true,
   };
 }
 

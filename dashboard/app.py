@@ -39,6 +39,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .backtest_jobs import BacktestJobManager
 from .freqtrade_client import FreqtradeClient, FreqtradeError
 from .ws_manager import WebSocketManager
 
@@ -172,11 +173,20 @@ async def lifespan(app: FastAPI):
     app.state.client = FreqtradeClient(base_url=base_url, username=user, password=pw)
     app.state.notifications = NotificationStore()
     app.state.connection = ConnectionState()
-    app.state.ws = WebSocketManager()
+    ws_manager = WebSocketManager()
+    app.state.ws = ws_manager
+    app.state.backtests = BacktestJobManager(
+        userdir=_project_root() / "user_data",
+        on_event=ws_manager.broadcast,
+    )
     logger.info("bridge ready — freqtrade=%s auth=%s", base_url, bool(user and pw))
     try:
         yield
     finally:
+        try:
+            await app.state.backtests.shutdown()
+        except Exception:  # noqa: BLE001
+            logger.exception("error shutting down backtest manager")
         await app.state.client.aclose()
 
 
@@ -485,6 +495,141 @@ def _make_app() -> FastAPI:
             "message": "Withdrawals require Coinbase Advanced credentials (Phase 2).",
             "echo": body,
         }
+
+    # ------------------------------------------------------------------
+    # Backtest + Hyperopt
+    # ------------------------------------------------------------------
+    @app.post("/api/backtest/run")
+    async def run_backtest(request: Request):
+        body = await _safe_body(request) or {}
+        strategy = body.get("strategy")
+        timerange = body.get("timerange") or "20230101-20240101"
+        if not strategy:
+            raise HTTPException(status_code=400, detail="missing 'strategy'")
+        manager: BacktestJobManager = request.app.state.backtests
+        if not manager.freqtrade_available():
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "freqtrade_not_installed",
+                    "message": "freqtrade not installed",
+                },
+            )
+        pairs = body.get("pairs") or None
+        if pairs is not None and not isinstance(pairs, list):
+            raise HTTPException(status_code=400, detail="'pairs' must be a list")
+        timeframe = body.get("timeframe") or None
+        try:
+            job = await manager.start_backtest(
+                strategy=strategy,
+                timerange=timerange,
+                pairs=pairs,
+                timeframe=timeframe,
+            )
+        except Exception as exc:  # noqa: BLE001 — surface the error
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        await request.app.state.notifications.add(
+            "info",
+            f"Backtest queued for {strategy} ({timerange})",
+            source="backtest",
+            jobId=job.id,
+        )
+        return {"jobId": job.id, "status": job.status, "kind": job.kind}
+
+    @app.get("/api/backtest/jobs")
+    async def list_backtest_jobs(request: Request):
+        manager: BacktestJobManager = request.app.state.backtests
+        jobs = await manager.list()
+        return {"jobs": jobs[:50]}
+
+    @app.get("/api/backtest/jobs/{job_id}")
+    async def get_backtest_job(job_id: str, request: Request):
+        manager: BacktestJobManager = request.app.state.backtests
+        job = await manager.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"unknown job {job_id}")
+        return job.to_public(include_log=True, log_tail=200)
+
+    @app.post("/api/backtest/jobs/{job_id}/cancel")
+    async def cancel_backtest_job(job_id: str, request: Request):
+        manager: BacktestJobManager = request.app.state.backtests
+        ok = await manager.cancel(job_id)
+        if not ok:
+            raise HTTPException(
+                status_code=404, detail=f"job {job_id} not found or not running"
+            )
+        await request.app.state.notifications.add(
+            "info", f"Backtest {job_id} cancelled", source="backtest"
+        )
+        return {"ok": True, "jobId": job_id}
+
+    @app.post("/api/hyperopt/run")
+    async def run_hyperopt(request: Request):
+        body = await _safe_body(request) or {}
+        strategy = body.get("strategy")
+        if not strategy:
+            raise HTTPException(status_code=400, detail="missing 'strategy'")
+        manager: BacktestJobManager = request.app.state.backtests
+        if not manager.freqtrade_available():
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "freqtrade_not_installed",
+                    "message": "freqtrade not installed",
+                },
+            )
+        epochs = int(body.get("epochs") or 300)
+        timerange = body.get("timerange") or "20230101-20240101"
+        spaces = body.get("spaces") or ["buy", "sell", "roi", "stoploss"]
+        if not isinstance(spaces, list) or not all(isinstance(s, str) for s in spaces):
+            raise HTTPException(status_code=400, detail="'spaces' must be list[str]")
+        loss = body.get("loss") or "SharpeHyperOptLoss"
+        timeframe = body.get("timeframe") or None
+        try:
+            job = await manager.start_hyperopt(
+                strategy=strategy,
+                epochs=epochs,
+                timerange=timerange,
+                spaces=spaces,
+                loss=loss,
+                timeframe=timeframe,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        await request.app.state.notifications.add(
+            "info",
+            f"Hyperopt queued for {strategy} ({epochs} epochs)",
+            source="hyperopt",
+            jobId=job.id,
+        )
+        return {"jobId": job.id, "status": job.status, "kind": job.kind}
+
+    @app.get("/api/hyperopt/jobs")
+    async def list_hyperopt_jobs(request: Request):
+        manager: BacktestJobManager = request.app.state.backtests
+        jobs = await manager.list()
+        return {"jobs": [j for j in jobs if j.get("kind") == "hyperopt"][:50]}
+
+    @app.get("/api/hyperopt/jobs/{job_id}")
+    async def get_hyperopt_job(job_id: str, request: Request):
+        manager: BacktestJobManager = request.app.state.backtests
+        job = await manager.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"unknown job {job_id}")
+        return job.to_public(include_log=True, log_tail=200)
+
+    @app.post("/api/hyperopt/jobs/{job_id}/cancel")
+    async def cancel_hyperopt_job(job_id: str, request: Request):
+        manager: BacktestJobManager = request.app.state.backtests
+        ok = await manager.cancel(job_id)
+        if not ok:
+            raise HTTPException(
+                status_code=404, detail=f"job {job_id} not found or not running"
+            )
+        await request.app.state.notifications.add(
+            "info", f"Hyperopt {job_id} cancelled", source="hyperopt"
+        )
+        return {"ok": True, "jobId": job_id}
 
     # ------------------------------------------------------------------
     # WebSocket
