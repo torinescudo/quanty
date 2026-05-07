@@ -877,3 +877,26 @@ body[data-density="spacious"] .page-body { padding: 36px 48px 56px; gap: 28px; }
 }
 .strat-param-k { color: var(--text-tertiary); }
 .strat-actions { display: flex; gap: 8px; }
+
+/* === BRIDGE OFFLINE BANNER === */
+.bridge-banner {
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 22px;
+  background: rgba(251,113,133,0.08);
+  border-bottom: 1px solid rgba(251,113,133,0.25);
+  border-left: 2px solid var(--neg);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  color: var(--neg);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.bridge-banner-msg { font-weight: 500; }
+.bridge-banner-hint {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-size: 10px;
+}
+

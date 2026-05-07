@@ -2,6 +2,22 @@
 // VOID Mount — top-level App, view router, drawer wiring
 // =============================================================
 
+function BridgeBanner({ state }) {
+  if (state?.bridgeOnline !== false) return null;
+  const anyLoading = Object.values(state?.loading || {}).some(Boolean);
+  return (
+    <div className="bridge-banner" role="status">
+      <span className="pulse-dot dead"/>
+      <span className="bridge-banner-msg">
+        Bridge offline · reconnecting{anyLoading ? '…' : '...'}
+      </span>
+      <span className="bridge-banner-hint">
+        Trading endpoints will resume automatically when freqtrade is reachable.
+      </span>
+    </div>
+  );
+}
+
 function App() {
   const s = useApiState();
   const [view, setView] = useState(() => s.connected ? 'dashboard' : 'onboard');
@@ -54,6 +70,7 @@ function App() {
       <Sidebar view={view} setView={setView}/>
       <div className="main">
         <PageHeader title={meta.t} subtitle={meta.sub} right={headerRight} onBell={() => setDrawer(true)}/>
+        <BridgeBanner state={s}/>
         <div className="page-body">
           {view === 'dashboard'  && <DashboardView/>}
           {view === 'portfolio'  && <PortfolioView/>}
