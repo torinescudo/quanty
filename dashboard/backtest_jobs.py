@@ -34,7 +34,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-JobStatus = str  # "running" | "completed" | "failed" | "cancelled"
+JobStatus = Literal["running", "completed", "failed", "cancelled"]
+JobKind = Literal["backtest", "hyperopt"]
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
@@ -53,7 +54,7 @@ class BacktestJob:
     """In-memory representation of a single backtest or hyperopt run."""
 
     id: str
-    kind: str  # "backtest" | "hyperopt"
+    kind: JobKind
     strategy: str
     timerange: str
     pairs: list[str] | None = None
@@ -432,16 +433,12 @@ class BacktestJobManager:
         return parse_backtest_json(path.read_text())
 
     def _find_backtest_result_file(self, job: BacktestJob) -> Path | None:
+        # glob silently returns [] for non-existent dirs — no need to pre-check.
         results_dir = self._userdir / "backtest_results"
-        if not results_dir.exists():
-            return None
-        # Freqtrade adds a timestamp suffix to the requested filename.
         candidates: list[Path] = []
         if job.export_filename:
-            stem = job.export_filename
-            candidates.extend(p for p in results_dir.glob(f"{stem}*.json") if p.is_file())
+            candidates.extend(p for p in results_dir.glob(f"{job.export_filename}*.json") if p.is_file())
         if not candidates:
-            # Fallback: most recent .json.
             candidates = [p for p in results_dir.glob("*.json") if p.is_file()]
         if not candidates:
             return None

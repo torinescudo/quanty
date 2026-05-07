@@ -110,7 +110,9 @@ class FreqtradeClient:
         return bool(self._access_token)
 
     async def _ensure_token(self) -> None:
-        if not self.auth_enabled:
+        # Fast path: skip the lock entirely once authenticated. Concurrent
+        # callers that arrive before the first login still serialize.
+        if not self.auth_enabled or self._access_token is not None:
             return
         async with self._auth_lock:
             if self._access_token is None:

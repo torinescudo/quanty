@@ -116,7 +116,24 @@
     // Shallow copy so React's useState identity check fires.
     return { ...state };
   }
-  function emit() {
+  // Hash slices that drive UI re-renders. We deliberately skip `loading`
+  // and `errors` because their per-fetch flapping shouldn't trigger renders
+  // unless they end up changing the user-visible result.
+  function _diffHash() {
+    return JSON.stringify({
+      c: state.connected, m: state.mode, b: state.bridgeOnline,
+      bal: state.balances, op: state.openOrders, fl: state.fills,
+      tr: state.transfers, st: state.strategies, n: state.notifications,
+      bt: state.backtestJobs, ho: state.hyperoptJobs,
+    });
+  }
+  let _lastHash = '';
+  function emit({ force = false } = {}) {
+    if (!force) {
+      const h = _diffHash();
+      if (h === _lastHash) return;
+      _lastHash = h;
+    }
     const snap = snapshot();
     subs.forEach(fn => { try { fn(snap); } catch (e) { console.error(e); } });
   }
@@ -508,7 +525,12 @@
   let pollTimer = null;
   function startPolling() {
     stopPolling();
-    pollTimer = setInterval(() => { refreshAll().catch(() => {}); }, POLL_MS);
+    // Skip polling while the bridge is unreachable — the dedicated
+    // reconnection loop in handleBridgeError() retries on its own cadence.
+    pollTimer = setInterval(() => {
+      if (!state.bridgeOnline) return;
+      refreshAll().catch(() => {});
+    }, POLL_MS);
   }
   function stopPolling() {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
