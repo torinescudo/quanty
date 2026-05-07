@@ -134,6 +134,18 @@ Los 14 altcoins del dashboard son sugerencia. Personalizalos en `user_data/confi
 
 Esta sección cubre el día a día del stack: arrancar/parar servicios, verificar estado, ajustar configuración por entorno.
 
+### Quickstart (un solo comando)
+
+```bash
+./scripts/quickstart.sh           # full: freqtrade dry-run + bridge + abre browser
+./scripts/quickstart.sh --demo    # solo bridge + UI (sin freqtrade, banner offline)
+./scripts/quickstart.sh --stop    # mata todo lo que arrancó
+```
+
+Crea `.venv/` la primera vez, instala deps, arranca freqtrade en dry-run + bridge en `:8000` y abre `http://localhost:8000` en tu browser. Idempotente: re-ejecutarlo no duplica procesos.
+
+Logs en tiempo real: `tail -f .quickstart.logs/bridge.log`.
+
 ### Arranque con Docker Compose (recomendado)
 
 El repo trae un `docker-compose.yml` con dos servicios — `freqtrade` (engine oficial) y `bridge` (FastAPI con el dashboard). Ambos comparten una red privada y el bridge espera a que freqtrade reporte sano antes de empezar.

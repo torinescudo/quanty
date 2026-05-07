@@ -8,17 +8,29 @@ version = "0.1.0"
 description = "Plataforma de research → live para trading sistemático en cripto. Construida sobre Freqtrade."
 readme = "README.md"
 requires-python = ">=3.10"
+# Core: solo el bridge. Freqtrade vive en el extra `trading` porque
+# arrastra ta-lib y deps pesadas que no todos los entornos pueden
+# compilar. El bridge devuelve 503 controlado cuando freqtrade no
+# está instalado, así que el dashboard arranca sin él.
 dependencies = [
-    "freqtrade>=2023.12",
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
     "httpx>=0.25.0",
     "python-dotenv>=1.0.0",
-    "pytest>=7.4.0",
 ]
 
 [project.optional-dependencies]
+trading = [
+    "freqtrade>=2023.12",
+]
 dev = [
     "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
     "black>=23.11.0",
 ]
+
+[tool.setuptools]
+packages = ["dashboard"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"

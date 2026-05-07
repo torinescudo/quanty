@@ -27,3 +27,8 @@ Thumbs.db
 # Environment
 .env
 .env.local
+
+# Quickstart runtime
+.quickstart.pids
+.quickstart.logs/
+*.egg-info/
