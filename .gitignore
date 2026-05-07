@@ -1,0 +1,29 @@
+# Freqtrade data directories
+user_data/data/
+user_data/backtest_results/
+user_data/hyperopt_results/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local

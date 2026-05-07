@@ -1,0 +1,62 @@
+{
+  "max_open_trades": 3,
+  "stake_currency": "USD",
+  "stake_amount": "unlimited",
+  "fiat_display_currency": "USD",
+  "dry_run": true,
+  "trading_mode": "spot",
+  "margin_mode": "",
+  "exchange": {
+    "name": "coinbase",
+    "key": "",
+    "secret": "",
+    "pair_whitelist": [
+      "BTC/USD",
+      "ETH/USD",
+      "SOL/USD",
+      "AVAX/USD",
+      "MATIC/USD",
+      "LINK/USD",
+      "AAVE/USD",
+      "UNI/USD",
+      "ARB/USD",
+      "OP/USD",
+      "DOGE/USD",
+      "ADA/USD",
+      "XRP/USD",
+      "NEAR/USD"
+    ],
+    "pair_blacklist": [],
+    "ccxt_config": {},
+    "ccxt_async_config": {}
+  },
+  "timeframe": "1h",
+  "dt_format": "%Y%m%d %H:%M:%S",
+  "dataformat_ohlcv": "json",
+  "dataformat_trades": "json",
+  "user_data_format": "json",
+  "fee_open_cost": 0.0025,
+  "fee_open_currency": "BTC",
+  "fee_close_cost": 0.0025,
+  "fee_close_currency": "BTC",
+  "fee_reference": "quote",
+  "fee_reference_percentage": true,
+  "amount_reserve_percent": 0.05,
+  "initial_state": "running",
+  "db_url": "sqlite:///user_data/tradesv3.sqlite",
+  "telegram": {
+    "enabled": false,
+    "token": "",
+    "chat_id": ""
+  },
+  "api_server": {
+    "enabled": true,
+    "listen_ip_address": "127.0.0.1",
+    "listen_port": 8080,
+    "verbosity": "info",
+    "enable_openapi": false,
+    "jwt_secret_key": "super-secret-key-change-in-production",
+    "CORS_origins": ["http://localhost:8000"]
+  },
+  "bot_name": "quant_platform"
+}
