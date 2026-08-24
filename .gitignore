@@ -3,6 +3,10 @@ user_data/data/
 user_data/backtest_results/
 user_data/hyperopt_results/
 
+# Alert engine persistence (SQLite)
+user_data/alerts.db
+user_data/alerts.db-journal
+
 # Virtual environments
 .venv/
 venv/

@@ -106,6 +106,10 @@
     // Keyed by jobId for O(1) updates.
     backtestJobs: {},   // { [jobId]: { status, log[], result, started_at, ... } }
     hyperoptJobs: {},   // same shape, but with current_epoch/best_params/...
+
+    // Alert engine — populated from GET /api/alerts + WS 'alert' channel.
+    alerts: [],
+    alertEvents: [],
   };
 
   // ------------------------------------------------------------
@@ -125,6 +129,7 @@
       bal: state.balances, op: state.openOrders, fl: state.fills,
       tr: state.transfers, st: state.strategies, n: state.notifications,
       bt: state.backtestJobs, ho: state.hyperoptJobs,
+      al: state.alerts, ae: state.alertEvents,
     });
   }
   let _lastHash = '';
@@ -508,6 +513,18 @@
       setLoading('notifications', false);
     }
   }
+  async function fetchAlerts() {
+    try {
+      const data = await request('/api/alerts');
+      state.alerts = (data?.rules || []).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    } catch (_) { /* handled by bridge banner */ }
+  }
+  async function fetchAlertEvents(limit = 50) {
+    try {
+      const data = await request(`/api/alerts/events?limit=${encodeURIComponent(limit)}`);
+      state.alertEvents = (data?.events || []).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    } catch (_) { /* handled by bridge banner */ }
+  }
 
   async function refreshAll() {
     await Promise.allSettled([
@@ -518,6 +535,8 @@
       fetchStrategies(),
       fetchNotifications(),
       fetchBacktestJobs(),
+      fetchAlerts(),
+      fetchAlertEvents(),
     ]);
     emit();
   }
@@ -595,6 +614,32 @@
         }
       } else if (channel === 'backtest' || channel === 'hyperopt') {
         applyJobEvent(channel, msg);
+      } else if (channel === 'alert') {
+        // Real-time alert fire from backend.
+        const notif = {
+          id: 'alert-' + (msg.rule_id || uuid()) + '-' + (msg.ts || Date.now()),
+          kind: 'alert',
+          msg: msg.message || `${msg.name || 'Alert'} triggered`,
+          ts: (msg.ts ? msg.ts * 1000 : Date.now()),
+          read: false,
+          level: 'warn',
+          raw: msg,
+        };
+        state.notifications = [notif, ...state.notifications].slice(0, 200);
+        // Push into the local events list too so the Alerts view updates.
+        const evt = {
+          rule_id: msg.rule_id,
+          ts: msg.ts || Date.now() / 1000,
+          metric_value: msg.value,
+          message: msg.message,
+        };
+        state.alertEvents = [evt, ...state.alertEvents].slice(0, 200);
+        emit();
+        if (window.__toast) {
+          window.__toast({ kind: 'alert', msg: notif.msg });
+        }
+        // Refresh rule counters (trigger_count, last_triggered_at).
+        fetchAlerts().then(emit).catch(() => {});
       }
     };
     sock.onerror = () => { /* will fall through to onclose */ };
@@ -871,6 +916,57 @@
           state.backtestJobs = { ...state.backtestJobs, [jobId]: { ...prev, status: 'cancelled' } };
           emit();
         }
+        return res;
+      },
+    },
+
+    // ---------- Alerts ----------
+    alerts: {
+      async list() {
+        await fetchAlerts();
+        emit();
+        return state.alerts;
+      },
+      async create(rule) {
+        const res = await request('/api/alerts', {
+          method: 'POST',
+          body: JSON.stringify(rule),
+        });
+        await fetchAlerts();
+        emit();
+        return res;
+      },
+      async update(id, patch) {
+        if (!id) throw new Error('alerts.update: id required');
+        const res = await request(`/api/alerts/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(patch),
+        });
+        await fetchAlerts();
+        emit();
+        return res;
+      },
+      async remove(id) {
+        if (!id) throw new Error('alerts.remove: id required');
+        const res = await request(`/api/alerts/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+        });
+        await fetchAlerts();
+        emit();
+        return res;
+      },
+      async events(limit = 50) {
+        await fetchAlertEvents(limit);
+        emit();
+        return state.alertEvents;
+      },
+      async test(id) {
+        if (!id) throw new Error('alerts.test: id required');
+        const res = await request(`/api/alerts/test/${encodeURIComponent(id)}`, {
+          method: 'POST',
+        });
+        await Promise.allSettled([fetchAlerts(), fetchAlertEvents()]);
+        emit();
         return res;
       },
     },

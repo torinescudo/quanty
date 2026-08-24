@@ -120,6 +120,7 @@ const NAV = [
   { id:'history',    label:'History',    icon:I.history,    group:'TRADE' },
   { id:'strategies', label:'Strategies', icon:I.strategies, group:'AUTO' },
   { id:'backtest',   label:'Backtest',   icon:I.backtest,   group:'AUTO' },
+  { id:'alerts',     label:'Alerts',     icon:I.bell,       group:'AUTO', badgeFrom:'alerts' },
   { id:'funding',    label:'Funding',    icon:I.funding,    group:'ACCOUNT' },
   { id:'keys',       label:'API Keys',   icon:I.keys,       group:'ACCOUNT' },
   { id:'settings',   label:'Settings',   icon:I.settings,   group:'ACCOUNT' },

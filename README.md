@@ -198,3 +198,38 @@ curl localhost:8000/metrics                # JSON con uptime, jobs activos, ws c
 Los logs son JSON estructurado (un objeto por línea con `ts`, `level`, `logger`, `msg`, `module`, `line`, opcional `request_id`). Cada request HTTP recibe un `X-Request-ID` automático (generado o reenviado desde el cliente) que se propaga a todas las líneas de log emitidas dentro de su contexto — útil para correlacionar errores en agregadores tipo Loki o Datadog.
 
 El cliente de freqtrade reintenta automáticamente fallos transitorios (errores de transporte y respuestas 5xx) con backoff exponencial acotado (0.5s → 1s → 2s, máximo 3 reintentos). Errores 4xx pasan directos sin reintento. Tras agotar reintentos el bridge devuelve `503 freqtrade_unreachable` al cliente.
+
+## Alerts
+
+El bridge trae un motor de alertas propio ("Alert Engine") integrado en la vista `Alerts` del dashboard. Se definen reglas del tipo "métrica X operador Y umbral", con cooldown y canales por regla. La evaluación corre cada 5s en un background task del bridge.
+
+Reglas persistidas en `user_data/alerts.db` (SQLite creada al arrancar; también guarda un historial capado a 500 eventos). Endpoints:
+
+```bash
+curl localhost:8000/api/alerts                       # list rules
+curl -X POST localhost:8000/api/alerts \
+     -H 'content-type: application/json' \
+     -d '{"name":"BTC dip","metric":"price.BTC-USD","op":"<","threshold":50000,"channels":["inapp"]}'
+curl -X PATCH  localhost:8000/api/alerts/al_xxx -d '{"enabled":false}'
+curl -X DELETE localhost:8000/api/alerts/al_xxx
+curl localhost:8000/api/alerts/events?limit=50       # trigger history
+curl -X POST localhost:8000/api/alerts/test/al_xxx   # fire manually to verify channels
+```
+
+**Métricas soportadas:**
+- `price.<PAIR>` — precio spot, alimentado por los ticks Coinbase relayados desde el frontend por WS (`price.BTC-USD`, `price.ETH-USD`, ...).
+- `portfolio.equity` — equity total en USD, leído de `/balance` de freqtrade.
+- `portfolio.drawdown` — drawdown en % contra el HWM in-memory desde el arranque.
+- `ratio.<A>/<B>` — cociente de dos precios (`ratio.SOL-USD/ETH-USD`).
+
+**Operadores:** `<`, `<=`, `>`, `>=`, `==`, `crosses_above`, `crosses_below`. Los `crosses_*` necesitan una observación previa por regla (se guarda como `last_value`).
+
+**Canales y env vars:**
+
+| Canal      | Variable requerida               | Comportamiento sin ella          |
+| ---------- | -------------------------------- | -------------------------------- |
+| `inapp`    | — (siempre activo)               | Broadcast WS + toast + notificación en el drawer |
+| `discord`  | `DISCORD_WEBHOOK_URL`            | No-op silencioso (log en `WARNING` si falla la request) |
+| `telegram` | `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` | No-op silencioso |
+
+El `cooldown_seconds` de cada regla evita spam: dos disparos dentro de esa ventana sólo emiten el primero. La UI en `Alerts` permite toggle enabled, crear/borrar reglas, disparar `test` manual (útil para validar el webhook antes de que salte una alerta real) y ver el historial de disparos recientes.

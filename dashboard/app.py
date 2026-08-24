@@ -39,10 +39,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from .alerts import (
+    VALID_CHANNELS,
+    VALID_OPS,
+    AlertDispatcher,
+    AlertEvaluator,
+    AlertStore,
+    MetricCache,
+    is_valid_metric,
+    snapshot_with_ratios,
+)
 from .backtest_jobs import BacktestJobManager
 from .freqtrade_client import FreqtradeClient, FreqtradeError
 from .logging_config import configure_logging, reset_request_id, set_request_id
 from .ws_manager import WebSocketManager
+
+try:  # httpx is a hard dependency; imported here for the alerts dispatcher
+    import httpx
+except Exception:  # pragma: no cover — httpx is in pyproject
+    httpx = None  # type: ignore[assignment]
 
 try:  # python-dotenv is optional but listed in pyproject; load .env if present
     from dotenv import load_dotenv
@@ -184,6 +199,24 @@ async def lifespan(app: FastAPI):
         userdir=_project_root() / "user_data",
         on_event=ws_manager.broadcast,
     )
+    # --- Alert engine ---
+    alerts_db = _project_root() / "user_data" / "alerts.db"
+    app.state.alerts_store = AlertStore(alerts_db)
+    app.state.alerts_evaluator = AlertEvaluator(app.state.alerts_store)
+    app.state.metric_cache = MetricCache()
+    # Reuse the client's underlying httpx client if possible; otherwise
+    # build our own async client for Discord/Telegram outbound calls.
+    if httpx is not None:
+        app.state.alerts_http = httpx.AsyncClient(timeout=5.0)
+    else:  # pragma: no cover — httpx is a hard dep
+        app.state.alerts_http = None
+    app.state.alerts_dispatcher = AlertDispatcher(
+        ws_manager=ws_manager,
+        http_client=app.state.alerts_http,
+        notification_sink=app.state.notifications,
+    )
+    app.state._alerts_task = asyncio.create_task(_alerts_loop(app))
+
     logger.info(
         "bridge ready",
         extra={"freqtrade_url": base_url, "auth": bool(user and pw)},
@@ -191,11 +224,70 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        # Stop the alert loop first so it does not race the store close.
+        task = getattr(app.state, "_alerts_task", None)
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         try:
             await app.state.backtests.shutdown()
         except Exception:  # noqa: BLE001
             logger.exception("error shutting down backtest manager")
+        try:
+            if app.state.alerts_http is not None:
+                await app.state.alerts_http.aclose()
+        except Exception:  # noqa: BLE001
+            logger.exception("error closing alerts http client")
         await app.state.client.aclose()
+
+
+async def _alerts_loop(app: FastAPI, interval: float = 5.0) -> None:
+    """Background task: recomputes portfolio equity, evaluates every rule,
+    and dispatches whatever fires. Runs every ``interval`` seconds.
+
+    Prices come from the :class:`MetricCache` — updated by the WebSocket
+    relay in :func:`websocket_endpoint`. Portfolio equity is fetched from
+    freqtrade's ``/balance`` when available.
+    """
+    cache: MetricCache = app.state.metric_cache
+    store: AlertStore = app.state.alerts_store
+    evaluator: AlertEvaluator = app.state.alerts_evaluator
+    dispatcher: AlertDispatcher = app.state.alerts_dispatcher
+    client: FreqtradeClient = app.state.client
+
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            # Refresh equity — best-effort. When freqtrade is down we
+            # simply skip; the price-driven rules still evaluate.
+            try:
+                balance = await client.balance()
+                total = 0.0
+                for c in (balance or {}).get("currencies") or []:
+                    total += float(c.get("est_stake") or 0.0)
+                if not total:
+                    total = float((balance or {}).get("total") or 0.0)
+                if total:
+                    await cache.set_equity(total)
+            except FreqtradeError:
+                pass
+            except Exception:  # noqa: BLE001 — never break the loop
+                logger.exception("alerts loop: unexpected error refreshing equity")
+
+            rules = await store.list_rules()
+            metric_names = {r.metric for r in rules if r.enabled}
+            values = await snapshot_with_ratios(cache, metric_names)
+            events = await evaluator.evaluate(values)
+            for event in events:
+                await evaluator.mark_triggered(event)
+                await dispatcher.dispatch(event)
+        except asyncio.CancelledError:
+            return
+        except Exception:  # noqa: BLE001 — the loop must survive
+            logger.exception("alerts loop iteration failed")
 
 
 def _make_app() -> FastAPI:
@@ -693,11 +785,156 @@ def _make_app() -> FastAPI:
         return await _cancel_job(request, job_id, kind="hyperopt")
 
     # ------------------------------------------------------------------
+    # Alerts
+    # ------------------------------------------------------------------
+    def _rule_to_public(rule) -> dict[str, Any]:
+        return rule.to_public()
+
+    @app.get("/api/alerts")
+    async def list_alerts(request: Request):
+        store: AlertStore = request.app.state.alerts_store
+        rules = await store.list_rules()
+        return {"rules": [_rule_to_public(r) for r in rules]}
+
+    @app.post("/api/alerts")
+    async def create_alert(request: Request):
+        body = await _safe_body(request) or {}
+        name = body.get("name") or ""
+        metric = body.get("metric")
+        op = body.get("op")
+        threshold = body.get("threshold")
+        channels = body.get("channels") or ["inapp"]
+        enabled = body.get("enabled", True)
+        cooldown = body.get("cooldown_seconds", 3600)
+        if not metric or not is_valid_metric(metric):
+            raise HTTPException(
+                status_code=400, detail=f"invalid metric '{metric}'"
+            )
+        if op not in VALID_OPS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid op '{op}' — expected one of {list(VALID_OPS)}",
+            )
+        if threshold is None:
+            raise HTTPException(status_code=400, detail="missing 'threshold'")
+        try:
+            threshold_f = float(threshold)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="'threshold' must be numeric")
+        if not isinstance(channels, list) or not channels:
+            raise HTTPException(status_code=400, detail="'channels' must be a non-empty list")
+        for ch in channels:
+            if ch not in VALID_CHANNELS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"unknown channel '{ch}' — expected one of {list(VALID_CHANNELS)}",
+                )
+        try:
+            cooldown_i = int(cooldown)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="'cooldown_seconds' must be int")
+
+        store: AlertStore = request.app.state.alerts_store
+        rule = await store.create_rule(
+            name=name,
+            metric=metric,
+            op=op,
+            threshold=threshold_f,
+            channels=channels,
+            enabled=bool(enabled),
+            cooldown_seconds=cooldown_i,
+        )
+        await request.app.state.notifications.add(
+            "info", f"Alert rule '{rule.name}' created", source="alerts", rule_id=rule.id
+        )
+        return {"ok": True, "rule": _rule_to_public(rule)}
+
+    @app.patch("/api/alerts/{rule_id}")
+    async def patch_alert(rule_id: str, request: Request):
+        body = await _safe_body(request) or {}
+        store: AlertStore = request.app.state.alerts_store
+        existing = await store.get_rule(rule_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail=f"unknown rule '{rule_id}'")
+        patch: dict[str, Any] = {}
+        if "name" in body:
+            patch["name"] = str(body["name"])
+        if "metric" in body:
+            if not is_valid_metric(body["metric"]):
+                raise HTTPException(status_code=400, detail=f"invalid metric '{body['metric']}'")
+            patch["metric"] = body["metric"]
+        if "op" in body:
+            if body["op"] not in VALID_OPS:
+                raise HTTPException(status_code=400, detail=f"invalid op '{body['op']}'")
+            patch["op"] = body["op"]
+        if "threshold" in body:
+            try:
+                patch["threshold"] = float(body["threshold"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="'threshold' must be numeric")
+        if "channels" in body:
+            chs = body["channels"]
+            if not isinstance(chs, list) or not chs:
+                raise HTTPException(status_code=400, detail="'channels' must be a non-empty list")
+            for ch in chs:
+                if ch not in VALID_CHANNELS:
+                    raise HTTPException(status_code=400, detail=f"unknown channel '{ch}'")
+            patch["channels"] = chs
+        if "enabled" in body:
+            patch["enabled"] = bool(body["enabled"])
+        if "cooldown_seconds" in body:
+            try:
+                patch["cooldown_seconds"] = int(body["cooldown_seconds"])
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="'cooldown_seconds' must be int")
+
+        updated = await store.update_rule(rule_id, **patch)
+        return {"ok": True, "rule": _rule_to_public(updated)}
+
+    @app.delete("/api/alerts/{rule_id}")
+    async def delete_alert(rule_id: str, request: Request):
+        store: AlertStore = request.app.state.alerts_store
+        deleted = await store.delete_rule(rule_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"unknown rule '{rule_id}'")
+        return {"ok": True, "id": rule_id}
+
+    @app.get("/api/alerts/events")
+    async def list_alert_events(request: Request, limit: int = 50):
+        store: AlertStore = request.app.state.alerts_store
+        events = await store.list_events(limit=limit)
+        return {"events": events}
+
+    @app.post("/api/alerts/test/{rule_id}")
+    async def test_alert(rule_id: str, request: Request):
+        store: AlertStore = request.app.state.alerts_store
+        dispatcher: AlertDispatcher = request.app.state.alerts_dispatcher
+        evaluator: AlertEvaluator = request.app.state.alerts_evaluator
+        rule = await store.get_rule(rule_id)
+        if rule is None:
+            raise HTTPException(status_code=404, detail=f"unknown rule '{rule_id}'")
+        # Fabricate a synthetic event at the threshold so users can verify
+        # every channel is plumbed correctly without waiting for a real hit.
+        from .alerts import TriggeredEvent, _format_message  # local import
+
+        event = TriggeredEvent(
+            rule=rule,
+            value=rule.threshold,
+            previous_value=rule.last_value,
+            ts=time.time(),
+            message=f"[TEST] {_format_message(rule, rule.threshold)}",
+        )
+        await evaluator.mark_triggered(event)
+        results = await dispatcher.dispatch(event)
+        return {"ok": True, "results": results}
+
+    # ------------------------------------------------------------------
     # WebSocket
     # ------------------------------------------------------------------
     @app.websocket("/ws")
     async def websocket_endpoint(ws: WebSocket):
         manager: WebSocketManager = ws.app.state.ws
+        cache: MetricCache = ws.app.state.metric_cache
         await manager.connect(ws)
         try:
             # Send a hello frame so the client can confirm the channel.
@@ -718,8 +955,18 @@ def _make_app() -> FastAPI:
                 channel = payload.get("channel") or payload.get("type")
                 if channel == "ping":
                     await ws.send_json({"channel": "pong", "ts": time.time()})
-                else:
-                    await manager.broadcast(payload)
+                    continue
+                # Feed relayed ticks into the metric cache so the alert
+                # evaluator can see the same prices the frontend sees.
+                if channel == "tick":
+                    pair = payload.get("pair") or payload.get("product_id")
+                    price = payload.get("price")
+                    if pair and price is not None:
+                        try:
+                            await cache.set_price(str(pair), float(price))
+                        except (TypeError, ValueError):
+                            pass
+                await manager.broadcast(payload)
         except WebSocketDisconnect:
             pass
         finally:

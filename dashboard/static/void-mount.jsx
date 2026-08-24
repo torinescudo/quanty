@@ -42,6 +42,7 @@ function App() {
     history:   { t: 'History',   sub: '⟢ Fills & transfers' },
     strategies:{ t: 'Strategies',sub: '⟢ Algorithmic operators' },
     backtest:  { t: 'Backtest',  sub: '⟢ Historical simulator' },
+    alerts:    { t: 'Alerts',    sub: '⟢ Metric watchdogs' },
     funding:   { t: 'Funding',   sub: '⟢ Deposits & withdrawals' },
     keys:      { t: 'API Keys',  sub: '⟢ Coinbase uplink' },
     settings:  { t: 'Settings',  sub: '⟢ Trading preferences' },
@@ -80,6 +81,7 @@ function App() {
           {view === 'history'    && <HistoryView/>}
           {view === 'strategies' && <StrategiesView/>}
           {view === 'backtest'   && <BacktestView/>}
+          {view === 'alerts'     && <AlertsView/>}
           {view === 'funding'    && <FundingView/>}
           {view === 'keys'       && <KeysView setView={setView}/>}
           {view === 'settings'   && <SettingsView/>}
